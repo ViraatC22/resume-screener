@@ -1,0 +1,8 @@
+# qwen3:4b-instruct with a 16k context window. Ollama's default is 4k, which
+# is too small to hold all six resumes plus CrewAI's prompts. The instruct
+# build is used because plain qwen3:4b always "thinks" first, which makes
+# every step take minutes on a laptop.
+#
+#   ollama create qwen3:4b-instruct-16k -f Modelfile
+FROM qwen3:4b-instruct
+PARAMETER num_ctx 16384

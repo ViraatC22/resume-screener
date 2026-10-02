@@ -1,0 +1,21 @@
+{
+  "role": "Resume Parser",
+
+  "goal": "Extract accurate, structured candidate information from every resume in the folder, whatever its layout.",
+
+  "backstory": "You are a meticulous recruiting coordinator who has processed thousands of resumes in every format: classic, two-column, skills-first, and unstructured walls of text. You copy facts exactly as written, never guess missing details, and never skip a resume.",
+
+  // Local model via Ollama — see Modelfile for the 16k-context variant.
+  "llm": {"model": "qwen3:4b-instruct-16k", "provider": "ollama", "temperature": 0.2},
+
+  "tools": ["custom:resume_reader_tool"],
+
+  // Lets the agent turn "2021 - present" into years of experience.
+  "inject_date": true,
+
+  "settings": {
+    "verbose": false,
+    "allow_delegation": false,
+    "max_iter": 5
+  }
+}

@@ -1,0 +1,68 @@
+{
+  // Display name for this crew
+  "name": "resume_screener",
+
+  // Each name must match agents/<name>.jsonc exactly.
+  "agents": [
+    "resume_parser",
+    "candidate_screener",
+    "interview_scheduler"
+  ],
+
+  // Tasks run top to bottom because process is sequential.
+  "tasks": [
+    {
+      "name": "parse_resumes_task",
+
+      "description": "Use the Resume Reader Tool once to read every resume in the resumes folder. For each resume, extract: full name, email, phone, current or most recent job title, total years of professional experience, every job held (title, company, dates, and what they did), technical skills, education, and up to three notable achievements. The resumes use different layouts, section names, and date formats, and some are missing sections, so read each one carefully and write 'not listed' for anything that is missing. Do not judge or score the candidates.",
+
+      "expected_output": "One Markdown block per resume, in the order the tool returned them, every resume exactly once, each in this exact format:\n\n### <Name>\n- File: <file name>\n- Email: <email>\n- Phone: <phone>\n- Current title: <title>\n- Years of experience: <number>\n- Work history: <one line per job: title at company (dates): what they did>\n- Skills: <comma-separated list>\n- Education: <degrees or training>\n- Notable achievements: <up to three, with numbers where given>",
+
+      "agent": "resume_parser"
+    },
+    {
+      "name": "screen_candidates_task",
+
+      "description": "Screen every parsed candidate for the {role} role. Score each from 1 to 10 on how well their skills, relevant experience, and accomplishments match what a hiring manager for {role} would expect. Rubric: 8-10 = strong match with directly relevant professional experience and measurable impact; 5-7 = partial match with some relevant skills but clear gaps in depth or experience; 1-4 = weak match with little or no relevant experience. Weigh professional work history most heavily: a long skills list without jobs or projects that demonstrate those skills counts for little, and buzzwords or self-praise count for nothing. Mark candidates scoring 8 or higher as INTERVIEW and everyone else as REJECT. Every parsed candidate must be scored, so the table has exactly one row per candidate.",
+
+      // Evaluating in input order before ranking stops the small model from
+      // losing a candidate while it sorts.
+      "expected_output": "A Markdown report titled '# Candidate Screening: {role}' with: (1) an '## Evaluations' section with one '### <Name>: <score>/10, <INTERVIEW or REJECT>' entry per parsed candidate, in the same order as the parsed data, each followed by 2-3 sentences citing specific evidence from their resume; (2) a '## Ranking' table of every evaluated candidate sorted by score, highest first, with columns Rank, Name, Email, Score, Decision; (3) a final '## Shortlist' section listing the name and email of every INTERVIEW candidate, or 'None' if nobody qualified.",
+
+      "agent": "candidate_screener",
+
+      // Only the parsed data — keeps the small model's context focused.
+      "context": ["parse_resumes_task"],
+
+      "output_file": "report.md",
+
+      "markdown": true
+    },
+    {
+      "name": "schedule_interviews_task",
+
+      "description": "Send a calendar invite to every candidate in the Shortlist section of the screening report, and to no one else. Call the Calendar Invite Tool once per shortlisted candidate, using their exact name and email from the report and '{role}' as the role. Schedule the interviews on {interview_date}: the first at 10:00, the next at 11:00, then 12:00, and so on. If the shortlist is empty, send nothing.",
+
+      "expected_output": "A short Markdown list of the invites sent, with each candidate's name, email, interview time, and the tool's confirmation message. If nobody was shortlisted, say so.",
+
+      "agent": "interview_scheduler",
+
+      "context": ["screen_candidates_task"]
+    }
+  ],
+
+  "process": "sequential",
+
+  "verbose": true,
+
+  // Off: memory needs an embeddings provider (OpenAI by default), and each
+  // screening run should start fresh anyway.
+  "memory": false,
+
+  "tracing": false,
+
+  // `crewai run` prompts for both placeholders:
+  //   role           — e.g. "Backend Software Engineer (Python)"
+  //   interview_date — YYYY-MM-DD, e.g. "2026-10-05"
+  "inputs": {}
+}
