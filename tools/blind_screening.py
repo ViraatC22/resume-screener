@@ -3,8 +3,9 @@
 Referenced from crew.jsonc as task guardrails, so they run in code between the
 agents. The screener never sees who a candidate is:
 
-- `anonymize_candidates` (parse task) checks every resume was parsed exactly
-  once, saves each candidate's name and contact details to candidates.json
+- `anonymize_candidates` (parse task) checks every readable resume was parsed
+  exactly once, skips unreadable files and older versions of a resume (same
+  email), saves each candidate's name and contact details to candidates.json
   under an ID (C1, C2, ...), and hands the screener the profiles with those
   details removed.
 - `check_screening` (screen task) checks every candidate got a 1-10 score,
@@ -21,10 +22,9 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from pypdf import PdfReader
+from tools.resume_reader_tool import RESUMES_DIR, read_resume, resume_files
 
 ROOT = Path(__file__).resolve().parent.parent
-RESUMES_DIR = ROOT / "resumes"
 CANDIDATES_FILE = ROOT / "candidates.json"
 
 SHORTLIST_SCORE = 8
@@ -49,10 +49,18 @@ PRONOUN_RE = re.compile(r"\b(he|she|him|her|his|hers|himself|herself)\b", re.I)
 
 def anonymize_candidates(output):
     """Guardrail for parse_resumes_task."""
-    pdfs = {pdf.name: pdf for pdf in sorted(RESUMES_DIR.glob("*.pdf"))}
-    ids = {name: f"C{i}" for i, name in enumerate(pdfs, start=1)}
+    texts, skipped = {}, {}
+    for path in resume_files():
+        try:
+            text = read_resume(path)
+        except Exception:
+            text = ""
+        if text:
+            texts[path.name] = text
+        else:
+            skipped[path.name] = "no readable text (possibly a scanned image)"
 
-    candidates, profiles, seen = {}, {}, []
+    entries, seen = {}, []
     for heading, lines in _blocks(output.raw):
         fields = {}
         kept = []
@@ -67,8 +75,10 @@ def anonymize_candidates(output):
         if "file" not in fields and "email" not in fields:
             continue  # a section heading, not a candidate
 
-        file_name = _match_file(fields.get("file", ""), pdfs)
+        file_name = _match_file(fields.get("file", ""), texts)
         name = fields.get("name") or re.sub(r"^(\d+[.)]|candidate|name)\s*:?\s*", "", heading, flags=re.I).strip("*: ")
+        if not file_name and _match_file(fields.get("file", ""), skipped):
+            continue  # an unreadable file the parser listed anyway
         if not file_name:
             return (False, f"The block for '{heading}' needs a '- File:' line with the exact resume file name.")
         if file_name in seen:
@@ -77,8 +87,7 @@ def anonymize_candidates(output):
             return (False, f"The block for {file_name} is missing the candidate's name.")
         seen.append(file_name)
 
-        resume_text = _pdf_text(pdfs[file_name])
-        email = _verified_email(fields.get("email", ""), resume_text)
+        email = _verified_email(fields.get("email", ""), texts[file_name])
         if email is None:
             return (
                 False,
@@ -86,15 +95,36 @@ def anonymize_candidates(output):
                 "resume. Copy it exactly as written.",
             )
 
-        cid = ids[file_name]
-        candidates[cid] = {"name": name, "email": email, "phone": fields.get("phone", ""), "file": file_name}
-        profiles[cid] = _redact("\n".join(kept), name)
+        entries[file_name] = {
+            "name": name, "email": email, "phone": fields.get("phone", ""), "file": file_name,
+            "profile": _redact("\n".join(kept), name),
+        }
 
-    missing = [name for name in pdfs if name not in seen]
+    missing = [name for name in texts if name not in seen]
     if missing:
         return (False, f"These resumes are missing from your answer: {', '.join(missing)}. Include every resume exactly once.")
 
-    CANDIDATES_FILE.write_text(json.dumps({"candidates": candidates}, indent=2))
+    # Several versions of one person's resume share an email: keep the newest
+    # file so nobody is screened or invited twice.
+    newest = {}
+    for file_name, entry in entries.items():
+        if not entry["email"]:
+            continue
+        other = newest.get(entry["email"])
+        if other is None or _mtime(file_name) > _mtime(other):
+            newest[entry["email"]] = file_name
+    for file_name, entry in entries.items():
+        keep = newest.get(entry["email"], file_name)
+        if keep != file_name:
+            skipped[file_name] = f"older version of {keep}"
+
+    candidates, profiles = {}, {}
+    for number, file_name in enumerate((f for f in texts if f not in skipped), start=1):
+        cid = f"C{number}"
+        profiles[cid] = entries[file_name].pop("profile")
+        candidates[cid] = entries[file_name]
+
+    CANDIDATES_FILE.write_text(json.dumps({"candidates": candidates, "skipped": skipped}, indent=2))
     body = "\n\n".join(f"### {cid}\n{profiles[cid]}" for cid in sorted(profiles, key=_id_number))
     return (
         True,
@@ -140,9 +170,9 @@ def check_screening(output):
         candidates[cid].pop("interview_start", None)
     for slot, cid in enumerate(shortlist):
         candidates[cid]["interview_start"] = (first_slot + timedelta(hours=slot)).isoformat()
-    CANDIDATES_FILE.write_text(json.dumps({"role": role, "candidates": candidates}, indent=2))
+    CANDIDATES_FILE.write_text(json.dumps({**data, "role": role, "candidates": candidates}, indent=2))
 
-    return (True, _report(role, candidates, evaluations, ranked, shortlist))
+    return (True, _report(role, candidates, evaluations, ranked, shortlist, data.get("skipped", {})))
 
 
 def _blocks(text):
@@ -157,16 +187,16 @@ def _blocks(text):
     return blocks
 
 
-def _match_file(value, pdfs):
+def _match_file(value, file_names):
     value = value.strip().strip("`'\"").lower()
-    for name in pdfs:
+    for name in file_names:
         if value in (name.lower(), Path(name).stem.lower()):
             return name
     return None
 
 
-def _pdf_text(pdf):
-    return "\n".join(page.extract_text() or "" for page in PdfReader(pdf).pages)
+def _mtime(file_name):
+    return (RESUMES_DIR / file_name).stat().st_mtime
 
 
 def _verified_email(value, resume_text):
@@ -184,7 +214,8 @@ def _redact(text, name):
     text = EMAIL_RE.sub("[email removed]", text)
     text = URL_RE.sub("[link removed]", text)
     text = PHONE_RE.sub("[phone removed]", text)
-    for token in sorted(set(re.findall(r"[A-Za-z][A-Za-z'-]+", name)), key=len, reverse=True):
+    # Unicode letters, so names like "José Núñez" are removed too.
+    for token in sorted(set(re.findall(r"[^\W\d_][\w'-]*", name)), key=len, reverse=True):
         if len(token) > 1:
             text = re.sub(rf"\b{re.escape(token)}\b", "[name removed]", text, flags=re.I)
     return text.strip()
@@ -226,7 +257,7 @@ def _id_number(cid):
     return int(cid[1:])
 
 
-def _report(role, candidates, evaluations, ranked, shortlist):
+def _report(role, candidates, evaluations, ranked, shortlist, skipped):
     lines = [
         f"# Candidate Screening: {role}",
         "",
@@ -253,6 +284,11 @@ def _report(role, candidates, evaluations, ranked, shortlist):
     for cid in sorted(evaluations, key=_id_number):
         c = candidates[cid]
         lines += [f"### {cid} ({c['name']}): {c['score']}/10, {c['decision']}", evaluations[cid][1], ""]
+
+    if skipped:
+        lines += ["## Skipped files", ""]
+        lines += [f"- {name}: {reason}" for name, reason in skipped.items()]
+        lines.append("")
 
     lines += [
         "## Bias check",

@@ -1,0 +1,31 @@
+{
+  // Reads one candidate reply. check_replies.py runs this crew once per reply
+  // and does everything else (matching, free slots, emails) in code; see
+  // tools/replies.py.
+  "name": "reply_reader",
+
+  "agents": ["reply_reader"],
+
+  "tasks": [
+    {
+      "name": "read_reply_task",
+
+      // Code turns the day words into dates (tools/replies.py resolve_days),
+      // so the model never does date math.
+      "description": "A job candidate replied to an email about their interview. Work out what they want.\n\nTheir interview is currently: {current_time}\n\nTimes we last offered them instead (numbered):\n{offered_times}\n\nThe reply was sent on {today}.\n\nThe candidate's reply:\n\"\"\"\n{reply}\n\"\"\"\n\nRules:\n- intent is 'confirm' if they accept their current time; 'reschedule' if they can't make it, ask for a different time, pick one of the offered times, or say none of the offered times work; 'withdraw' if they no longer want the interview; 'question' for anything else, such as questions about the role, pay, or format, or messages unrelated to the interview.\n- If they picked one of the offered times (by number, day, or time), set chosen_option to its number.\n- available_days: the days they said they CAN do, in English, as they said them: a weekday such as 'Wednesday', 'tomorrow', 'next week', 'next week Thursday', or a date written as YYYY-MM-DD. Don't include days they said they can't do. If they named no days they can do, leave it empty. Never guess.\n- time_of_day: 'morning' or 'afternoon' if they asked for one, otherwise 'any'.\n- earliest_time and latest_time: only for clock times they gave, as 24-hour HH:MM: 'after 2pm' means earliest 14:00, 'at 3pm' means both 15:00, 'before noon' means latest 11:30. Leave them empty if they gave no clock times.\n- The reply may be in any language.",
+
+      "expected_output": "The candidate's intent, any offered time they chose, the days and times they said they can do, and a one-sentence summary of the reply.",
+
+      "agent": "reply_reader",
+
+      // Native structured output: the model must answer in this schema.
+      "output_pydantic": {"python": "tools.replies.ReplyDecision"}
+    }
+  ],
+
+  "process": "sequential",
+  "verbose": false,
+  "memory": false,
+  "tracing": false,
+  "inputs": {}
+}

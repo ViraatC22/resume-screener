@@ -1,12 +1,13 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["fpdf2>=2.8"]
+# dependencies = ["fpdf2>=2.8", "python-docx>=1.1"]
 # ///
 """Generate the six sample resumes in resumes/.
 
 Two strong, two middling, and two weak candidates for a Python backend role.
-Layouts, section names, date formats, and fonts deliberately differ so the crew
-has to cope with real-world variety. File names never reveal the tier.
+File formats (PDF, Word, plain text), layouts, section names, date formats, and
+fonts deliberately differ so the crew has to cope with real-world variety. File
+names never reveal the tier.
 
 Run from the project root:
 
@@ -15,6 +16,8 @@ Run from the project root:
 
 from pathlib import Path
 
+from docx import Document
+from docx.shared import Pt
 from fpdf import FPDF
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "resumes"
@@ -148,41 +151,56 @@ def daniel_okafor() -> FPDF:
     return pdf
 
 
-# --- Middling #1: objective statement, vague bullets, numeric dates ----------
-def emily_carter() -> FPDF:
-    f = "Times"
-    pdf = new_pdf(f)
-    pdf.set_font(f, "B", 16)
-    pdf.cell(0, 8, "EMILY CARTER", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font(f, size=10)
-    pdf.cell(0, 5, "Columbus, OH - 614.555.0190 - emily.carter@example.com", new_x="LMARGIN", new_y="NEXT")
+# --- Middling #1: Word template, contact details in the page header, skills table
+def emily_carter() -> Document:
+    doc = Document()
+    header = doc.sections[0].header.paragraphs[0]
+    header.text = "Columbus, OH - 614.555.0190 - emily.carter@example.com"
 
-    heading(pdf, f, "Objective", rule=False)
-    para(pdf, "Motivated junior developer seeking a backend software engineering position where I can grow my Python skills "
-              "and contribute to a collaborative team.")
+    title = doc.add_paragraph()
+    run = title.add_run("EMILY CARTER")
+    run.bold = True
+    run.font.size = Pt(18)
 
-    heading(pdf, f, "Work History", rule=False)
-    job(pdf, f, "Junior Software Developer", "06/2024 - present", "Midwest Insurance Group", [
-        "Write Python scripts to automate internal reports.",
-        "Helped maintain a Flask app used by the claims team.",
-        "Worked on SQL queries for the data team.",
-        "Participated in code reviews and daily standups.",
-    ])
-    job(pdf, f, "IT Support Intern", "01/2023 - 05/2024", "Ohio State University IT Services", [
-        "Resolved help-desk tickets and set up laptops.",
-        "Wrote a small Python script to clean up user account spreadsheets.",
-    ])
+    doc.add_heading("Objective", level=2)
+    doc.add_paragraph("Motivated junior developer seeking a backend software engineering position where I can "
+                      "grow my Python skills and contribute to a collaborative team.")
 
-    heading(pdf, f, "Technical Skills", rule=False)
-    para(pdf, "Python, Flask, SQL (MySQL), HTML/CSS, Git, Excel, some JavaScript, familiar with Docker")
+    doc.add_heading("Work History", level=2)
+    for title_text, meta, bullets in [
+        ("Junior Software Developer", "Midwest Insurance Group  |  06/2024 - present", [
+            "Write Python scripts to automate internal reports.",
+            "Helped maintain a Flask app used by the claims team.",
+            "Worked on SQL queries for the data team.",
+            "Participated in code reviews and daily standups.",
+        ]),
+        ("IT Support Intern", "Ohio State University IT Services  |  01/2023 - 05/2024", [
+            "Resolved help-desk tickets and set up laptops.",
+            "Wrote a small Python script to clean up user account spreadsheets.",
+        ]),
+    ]:
+        doc.add_paragraph().add_run(title_text).bold = True
+        doc.add_paragraph().add_run(meta).italic = True
+        for item in bullets:
+            doc.add_paragraph(item, style="List Bullet")
 
-    heading(pdf, f, "Education", rule=False)
-    para(pdf, "B.S. Information Technology - The Ohio State University - May 2024 - GPA 3.2")
+    doc.add_heading("Technical Skills", level=2)
+    table = doc.add_table(rows=0, cols=2)
+    for label, value in [
+        ("Languages", "Python, SQL (MySQL), HTML/CSS, some JavaScript"),
+        ("Frameworks", "Flask"),
+        ("Tools", "Git, Excel, familiar with Docker"),
+    ]:
+        cells = table.add_row().cells
+        cells[0].text, cells[1].text = label, value
 
-    heading(pdf, f, "Projects", rule=False)
-    para(pdf, "- Personal budget tracker web app (Flask + SQLite)")
-    para(pdf, "- Followed a tutorial to build a REST API for a to-do list")
-    return pdf
+    doc.add_heading("Education", level=2)
+    doc.add_paragraph("B.S. Information Technology - The Ohio State University - May 2024 - GPA 3.2")
+
+    doc.add_heading("Projects", level=2)
+    doc.add_paragraph("Personal budget tracker web app (Flask + SQLite)", style="List Bullet")
+    doc.add_paragraph("Followed a tutorial to build a REST API for a to-do list", style="List Bullet")
+    return doc
 
 
 # --- Middling #2: skills-first functional resume, career switcher ------------
@@ -219,37 +237,31 @@ def marcus_lee() -> FPDF:
     return pdf
 
 
-# --- Weak #1: unrelated experience, typos, very short ------------------------
-def tyler_brooks() -> FPDF:
-    f = "Helvetica"
-    pdf = new_pdf(f)
-    pdf.set_font(f, "B", 14)
-    pdf.cell(0, 7, "Tyler Brooks", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font(f, size=10)
-    pdf.cell(0, 5, "partyking99@example.com   cell: 555 0167", new_x="LMARGIN", new_y="NEXT")
+# --- Weak #1: plain-text resume, unrelated experience, typos, very short ------
+def tyler_brooks() -> str:
+    return """Tyler Brooks
+partyking99@example.com   cell: 555 0167
 
-    heading(pdf, f, "About Me", rule=False)
-    para(pdf, "Hard worker and people person looking to get into tech becuase it pays good. "
-              "I am a fast lerner and good with computers.")
+ABOUT ME
+Hard worker and people person looking to get into tech becuase it pays good.
+I am a fast lerner and good with computers.
 
-    heading(pdf, f, "Experiance", rule=False)
-    job(pdf, f, "Shift Manager", "2021-2025", "QuickMart Convenience Stores", [
-        "Opened and closed store, counted registers",
-        "Made employee schedules",
-        "Delt with customer complaints",
-    ])
-    job(pdf, f, "Cashier", "2019-2021", "Burger Barn", [
-        "Took orders and handled cash",
-    ])
+EXPERIANCE
+Shift Manager, QuickMart Convenience Stores (2021-2025)
+  * Opened and closed store, counted registers
+  * Made employee schedules
+  * Delt with customer complaints
+Cashier, Burger Barn (2019-2021)
+  * Took orders and handled cash
 
-    heading(pdf, f, "Skills", rule=False)
-    para(pdf, "Microsoft Word, Excel, social media, typing 45 wpm, team player")
+SKILLS
+Microsoft Word, Excel, social media, typing 45 wpm, team player
 
-    heading(pdf, f, "Education", rule=False)
-    para(pdf, "Lincoln High School diploma 2019")
-    pdf.ln(4)
-    para(pdf, "References available upon request")
-    return pdf
+EDUCATION
+Lincoln High School diploma 2019
+
+References available upon request
+"""
 
 
 # --- Weak #2: no sections, keyword stuffing, contact info buried at the end --
@@ -278,9 +290,9 @@ def kevin_walsh() -> FPDF:
 RESUMES = {
     "Priya_Raman_Resume.pdf": priya_raman,
     "daniel-okafor-cv.pdf": daniel_okafor,
-    "EmilyCarter_resume.pdf": emily_carter,
+    "EmilyCarter_resume.docx": emily_carter,
     "marcus_lee_2026.pdf": marcus_lee,
-    "TylerBrooks.pdf": tyler_brooks,
+    "TylerBrooks.txt": tyler_brooks,
     "KW_resume_final_v2.pdf": kevin_walsh,
 }
 
@@ -288,5 +300,12 @@ RESUMES = {
 if __name__ == "__main__":
     OUT_DIR.mkdir(exist_ok=True)
     for filename, build in RESUMES.items():
-        build().output(str(OUT_DIR / filename))
+        resume = build()
+        path = OUT_DIR / filename
+        if isinstance(resume, str):
+            path.write_text(resume)
+        elif isinstance(resume, FPDF):
+            resume.output(str(path))
+        else:
+            resume.save(str(path))
         print(f"wrote resumes/{filename}")
