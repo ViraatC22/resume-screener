@@ -1,0 +1,7 @@
+# Evaluation model for evaluate.py (DeepEval): Gemma 3 12B with a 16k context
+# window. It's a different, larger model than the agents' Qwen3 4B, so the
+# agents are never graded by their own model.
+#
+#   ollama create gemma3:12b-16k -f Modelfile.eval
+FROM gemma3:12b
+PARAMETER num_ctx 16384

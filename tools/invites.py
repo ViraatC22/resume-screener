@@ -24,8 +24,10 @@ from urllib.parse import urlencode
 from icalendar import Calendar, Event, vCalAddress
 
 ROOT = Path(__file__).resolve().parent.parent
-INVITES_DIR = ROOT / "invites"
-CANDIDATES_FILE = ROOT / "candidates.json"
+# evaluate.py points these at a scratch folder so test runs never touch real state.
+STATE_DIR = Path(os.getenv("RESUME_SCREENER_STATE_DIR", ROOT))
+INVITES_DIR = STATE_DIR / "invites"
+CANDIDATES_FILE = STATE_DIR / "candidates.json"
 INTERVIEW_MINUTES = 30
 OUR_HEADER = "X-Resume-Screener"
 MSGID_DOMAIN = "resume-screener"

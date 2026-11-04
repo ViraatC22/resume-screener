@@ -1,183 +1,171 @@
-"""Evaluation harness: review the screening crew's decisions before a person signs off.
+"""Evaluate the crews with DeepEval (https://deepeval.com/integrations/frameworks/crewai).
 
-Run it after `crewai run`:
+    uv run evaluate.py replies     # reply reader: 9 sample replies (about 15 minutes)
+    uv run evaluate.py screening   # screening crew: the six sample resumes (about 15 minutes)
+    uv run evaluate.py all
 
-    uv run evaluate.py              # deterministic checks + judge LLM
-    uv run evaluate.py --no-judge   # deterministic checks only (faster)
+`instrument_crewai()` traces every crew run. Each golden (an input with the answer
+we expect) is one run, and metrics score it at two levels:
 
-Two layers review every decision (see evaluation/):
+- the whole run, against the golden's expected output (did the crew get it right?)
+- individual agents, against the input they were given (is the output grounded in
+  it, and free of bias?)
 
-1. Deterministic checks compare the agents' output with the resumes and with
-   fixed rules: claimed years of experience, cited skills and numbers,
-   decisions vs. the cutoff, blinding, bias terms, invites, coverage.
-2. A judge LLM (Gemma 3 12B, local), a different and more capable model than the
-   screening agent (Qwen3 4B), re-scores each anonymous resume and reviews the
-   agent's reasoning and ranking.
-
-Each candidate ends up "ready for sign-off" or "needs human review", with the
-reasons. Nothing is changed automatically: evaluation.md is for the person who
-makes the final call.
+The metrics are judged by Gemma 3 12B through Ollama (see Modelfile.eval): a
+different, larger model than the agents' Qwen3 4B, so the agents never grade
+themselves, and everything stays local. Screening runs use a scratch folder with
+email off, so evaluations never send invites or touch the real candidates.json.
 """
 
-import argparse
 import json
-from datetime import datetime
+import os
+import sys
+import tempfile
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 ROOT = Path(__file__).resolve().parent
-REPORT = ROOT / "evaluation.md"
-RESULTS = ROOT / "evaluation.json"
-SCORE_GAP = 3  # agent and judge scores this far apart need a person
-RANK_GAP = 2   # the judge scoring a lower-ranked candidate this much higher flags the ranking
+SCRATCH = Path(tempfile.mkdtemp(prefix="resume_screener_eval_"))
+os.environ["RESUME_SCREENER_STATE_DIR"] = str(SCRATCH)
+os.environ["SMTP_HOST"] = ""  # set before CrewAI loads .env, which never overrides it
+os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "YES")
+# A 12B model on a laptop is far slower than the cloud APIs DeepEval's defaults assume.
+os.environ.setdefault("DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE", "900")
+os.environ.setdefault("DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE", "3600")
+
+from crewai.project.crew_loader import load_crew  # noqa: E402
+from deepeval.dataset import EvaluationDataset, Golden  # noqa: E402
+from deepeval.evaluate.configs import AsyncConfig  # noqa: E402
+from deepeval.integrations.crewai import instrument_crewai  # noqa: E402
+from deepeval.metrics import BiasMetric, GEval  # noqa: E402
+from deepeval.models import OllamaModel  # noqa: E402
+from deepeval.test_case import LLMTestCaseParams as Param  # noqa: E402
+from deepeval.tracing import trace, update_current_trace  # noqa: E402
+
+EVAL_MODEL = OllamaModel(model="gemma3:12b-16k", temperature=0)
+SEQUENTIAL = AsyncConfig(run_async=False)  # Ollama runs one model call at a time anyway
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Review the screening crew's decisions.")
-    parser.add_argument("--no-judge", action="store_true", help="run only the deterministic checks")
-    args = parser.parse_args()
-    load_dotenv(ROOT / ".env", override=True)
-
-    from crewai.project.json_loader import load_jsonc_file
-
-    from evaluation.checks import check_run
-    from evaluation.judge import JudgeUnavailable, judge, judge_model
-    from tools.blind_screening import SHORTLIST_SCORE
-    from tools.invites import load_state
-    from tools.resume_reader_tool import read_resume, resume_files
-
-    data = load_state()
-    inputs = load_jsonc_file(ROOT / "crew.jsonc")["inputs"]
-    findings, run_findings = check_run(data)
-
-    reviews, judge_note = None, None
-    if args.no_judge:
-        judge_note = "Judge not run (--no-judge)."
-    else:
-        print(f"Asking the judge ({judge_model()}) to review {len(data['candidates'])} decisions...")
-        texts = {path.name: read_resume(path) for path in resume_files()}
-        try:
-            reviews = judge(inputs["role"], inputs["role_requirements"], data, texts)
-        except JudgeUnavailable as exc:
-            judge_note = f"Judge unavailable: {exc}. Every candidate needs human review."
-
-    results = {}
-    for cid, c in data["candidates"].items():
-        reasons = [f"{f.check}: {f.message}" for f in findings[cid] if f.severity == "fail"]
-        review = (reviews or {}).get(cid)
-        if review:
-            # Agreement comes from the judge's own score and the same cutoff, so a
-            # judge that says "disagree" while scoring below 8 can't contradict itself.
-            judge_decision = "INTERVIEW" if review.judge_score >= SHORTLIST_SCORE else "REJECT"
-            if judge_decision != c["decision"]:
-                reasons.append(f"judge would {judge_decision} (judge scored {review.judge_score}/10)")
-            for claim in review.claims:
-                if not claim.supported:
-                    reasons.append(f"judge: unsupported claim \"{claim.claim}\" ({claim.evidence})")
-            if review.bias_concern:
-                reasons.append("judge: possible bias in the agent's reasoning")
-            if abs(review.judge_score - c["score"]) >= SCORE_GAP:
-                reasons.append(f"judge scored {review.judge_score}/10 vs. the agent's {c['score']}/10")
-        if not review:
-            reasons.append("not reviewed by the judge")
-        results[cid] = {
-            "name": c["name"],
-            "agent_score": c["score"],
-            "decision": c["decision"],
-            "judge": review.model_dump() if review else None,
-            "checks": [f._asdict() for f in findings[cid]],
-            "verdict": "needs human review" if reasons else "ready for sign-off",
-            "reasons": reasons,
-        }
-
-    ranking_findings = _ranking_check(results) if reviews else []
-
-    RESULTS.write_text(json.dumps({
-        "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "judge_model": None if args.no_judge else judge_model(),
-        "judge_note": judge_note,
-        "ranking_findings": ranking_findings,
-        "run_checks": [f._asdict() for f in run_findings],
-        "candidates": results,
-    }, indent=2))
-    REPORT.write_text(_markdown(inputs["role"], results, run_findings, ranking_findings, bool(reviews), judge_note,
-                                None if args.no_judge else judge_model()))
-
-    print()
-    for cid, r in results.items():
-        judge_score = f"judge {r['judge']['judge_score']}/10" if r["judge"] else "judge -"
-        print(f"  {cid} {r['name']:15} agent {r['agent_score']:>2}/10  {judge_score:13} {r['decision']:9} -> {r['verdict']}")
-        for reason in r["reasons"]:
-            print(f"      - {reason}")
-    if judge_note:
-        print(f"\n{judge_note}")
-    if reviews:
-        print("\nRanking: " + ("; ".join(ranking_findings) if ranking_findings else "consistent with the judge's scores."))
-    for f in run_findings:
-        print(f"  [{f.severity}] {f.check}: {f.message}")
-    print(f"\nWrote {REPORT.name} and {RESULTS.name}.")
+def with_metrics(agent, metrics):
+    """Attach DeepEval metrics to an agent loaded from JSON (what deepeval's Agent(metrics=...) does)."""
+    object.__setattr__(agent, "_metrics", metrics)
 
 
-def _ranking_check(results) -> list[str]:
-    """Pairs the agent ranks one way and the judge scores clearly the other way."""
-    inversions = []
-    ranked = sorted(results, key=lambda cid: (-results[cid]["agent_score"], int(cid[1:])))
-    for n, higher in enumerate(ranked):
-        for lower in ranked[n + 1:]:
-            gap = results[lower]["judge"]["judge_score"] - results[higher]["judge"]["judge_score"]
-            if results[higher]["agent_score"] > results[lower]["agent_score"] and gap >= RANK_GAP:
-                inversions.append(f"the agent ranks {higher} above {lower}, but the judge scores {lower} "
-                                  f"{gap} points higher")
-    return inversions
+# --- Reply reader -------------------------------------------------------------
+
+CURRENT = "Monday, November 09 at 10:00 EST"
+OFFERED = "1. Tuesday, November 10 at 10:00 EST\n2. Wednesday, November 11 at 13:00 EST\n3. Thursday, November 12 at 15:00 EST"
+TODAY = "Wednesday 2026-11-04"
+
+REPLY_GOLDENS = [
+    ("Hi! Monday doesn't work for me unfortunately - could we do Wednesday afternoon instead?\n\nThanks,\nPriya",
+     "None", "intent reschedule; days: Wednesday; time of day: afternoon; no option chosen"),
+    ("Hello,\n\nUnfortunately I have a conflict on Monday. Would Thursday at 2pm work?\n\nBest regards,\nDaniel Okafor",
+     "None", "intent reschedule; days: Thursday; time: 14:00"),
+    ("So sorry, that time doesn't work after all - something came up. I'm pretty flexible otherwise.",
+     "None", "intent reschedule; no days or times given; no option chosen"),
+    ("None of those work for me either, sorry!",
+     OFFERED, "intent reschedule; no option chosen; no days or times given"),
+    ("¡Hola! La opción 2 me viene perfecta. ¡Muchas gracias!",
+     OFFERED, "intent reschedule (they picked an offered time); chosen option 2"),
+    ("Perfect, see you then!", "None", "intent confirm; no days or times"),
+    ("Quick question - will the interview be over Zoom or in person? And what's the salary range?",
+     "None", "intent question; no days or times"),
+    ("Thanks so much for the opportunity, but I've just accepted another offer, so please cancel my interview.",
+     "None", "intent withdraw; no days or times"),
+    ("Next week works better for me, ideally mornings before 11.",
+     "None", "intent reschedule; days: next week; time of day: morning; latest time 11:00"),
+]
 
 
-def _markdown(role, results, run_findings, ranking_findings, judged, judge_note, judge_model) -> str:
-    flagged = {cid: r for cid, r in results.items() if r["reasons"]}
-    lines = [
-        f"# Evaluation: {role}",
-        "",
-        f"Screening agent: qwen3:4b-instruct (local). Judge: {judge_model or 'not run'} (local). "
-        f"Evaluated {datetime.now():%Y-%m-%d %H:%M}.",
-        "",
-        "| ID | Candidate | Agent score | Judge score | Decision | Verdict |",
-        "|---|---|---|---|---|---|",
-    ]
-    for cid, r in results.items():
-        judge_score = f"{r['judge']['judge_score']}/10" if r["judge"] else "-"
-        lines.append(f"| {cid} | {r['name']} | {r['agent_score']}/10 | {judge_score} | {r['decision']} | {r['verdict']} |")
-    if judge_note:
-        lines += ["", f"> {judge_note}"]
+def evaluate_replies():
+    reply_understood = GEval(
+        name="Reply understood",
+        model=EVAL_MODEL,
+        threshold=0.7,
+        criteria="Compare the actual output with the expected output. The intent must match. If the expected "
+        "output names a chosen option, days, a time of day, or clock times, the actual output must include the "
+        "same ones; if it says none were given, the actual output must not add any (empty lists, null values, and a "
+        "time of day of 'any' all mean none were given). Ignore the summary's wording.",
+        evaluation_params=[Param.ACTUAL_OUTPUT, Param.EXPECTED_OUTPUT],
+    )
+    grounded = GEval(
+        name="Grounded in the reply",
+        model=EVAL_MODEL,
+        threshold=0.7,
+        criteria="The input contains a candidate's email reply. Every day, time, and chosen option in the actual "
+        "output must come from what the candidate actually wrote. Penalize anything invented, and any day the "
+        "candidate said they can't do being listed as one they can.",
+        evaluation_params=[Param.INPUT, Param.ACTUAL_OUTPUT],
+    )
+    crew, _ = load_crew(ROOT / "replies.jsonc")
+    with_metrics(crew.agents[0], [grounded])
 
-    lines += ["", "## Needs human review", ""]
-    if not flagged:
-        lines.append("Nothing flagged.")
-    for cid, r in flagged.items():
-        lines.append(f"- **{cid} {r['name']}**: " + "; ".join(r["reasons"]))
+    dataset = EvaluationDataset(goldens=[
+        Golden(input=reply, expected_output=expected, additional_metadata={"offered_times": offered})
+        for reply, offered, expected in REPLY_GOLDENS
+    ])
+    for golden in dataset.evals_iterator(async_config=SEQUENTIAL):
+        with trace(expected_output=golden.expected_output, metrics=[reply_understood]):
+            result = crew.kickoff(inputs={
+                "reply": golden.input,
+                "current_time": CURRENT,
+                "offered_times": golden.additional_metadata["offered_times"],
+                "today": TODAY,
+            })
+            update_current_trace(input=golden.input, output=result.raw)
 
-    if judged:
-        lines += ["", "## Ranking review", ""]
-        lines += [f"- {f}" for f in ranking_findings] or ["Consistent with the judge's independent scores."]
 
-    lines += ["", "## Per-candidate detail", ""]
-    for cid, r in results.items():
-        lines += [f"### {cid} {r['name']}: agent {r['agent_score']}/10, {r['decision']}"]
-        if r["judge"]:
-            j = r["judge"]
-            lines += [f"**Judge ({j['judge_score']}/10):** {j['explanation']}", "", "Claims in the agent's reasoning:"]
-            lines += [f"- {'✓' if cl['supported'] else '✗'} {cl['claim']} ({cl['evidence']})" for cl in j["claims"]]
-        lines += [f"- [{f['severity']}] {f['check']}: {f['message']}" for f in r["checks"]] or ["- All automated checks passed."]
-        lines.append("")
+# --- Screening crew ------------------------------------------------------------
 
-    if run_findings:
-        lines += ["## Run checks", ""] + [f"- [{f.severity}] {f.check}: {f.message}" for f in run_findings] + [""]
+def evaluate_screening():
+    correct_shortlist = GEval(
+        name="Correct shortlist",
+        model=EVAL_MODEL,
+        threshold=0.8,
+        criteria="The actual output lists who was invited to interview and who was rejected. It must invite exactly "
+        "the candidates the expected output invites and reject exactly the ones it rejects.",
+        evaluation_params=[Param.ACTUAL_OUTPUT, Param.EXPECTED_OUTPUT],
+    )
+    evidence_based = GEval(
+        name="Evidence-based screening",
+        model=EVAL_MODEL,
+        threshold=0.7,
+        criteria="The input contains anonymous candidate profiles (C1, C2, ...). For each candidate, every claim the "
+        "actual output makes (skills, years of experience, employers, numbers, projects) must be supported by that "
+        "candidate's profile in the input. Penalize invented, exaggerated, or miscalculated claims, and scores that "
+        "contradict the rubric in the input.",
+        evaluation_params=[Param.INPUT, Param.ACTUAL_OUTPUT],
+    )
+    bias = BiasMetric(model=EVAL_MODEL, threshold=0.5)
 
-    lines += ["## Human sign-off", "",
-              "The agent's decisions stand only once a person approves them. Tick or override each one:", ""]
-    lines += [f"- [ ] {cid} {r['name']}: {r['decision']}" + (" (flagged above)" if r["reasons"] else "")
-              for cid, r in results.items()]
-    return "\n".join(lines) + "\n"
+    crew, inputs = load_crew(ROOT / "crew.jsonc")
+    screener = next(agent for agent in crew.agents if "Recruiter" in agent.role)
+    with_metrics(screener, [evidence_based, bias])
 
+    dataset = EvaluationDataset(goldens=[Golden(
+        input=f"Screen the six sample resumes for the {inputs['role']} role.",
+        expected_output="Invite to interview: Priya Raman, Daniel Okafor. "
+        "Reject: Emily Carter, Marcus Lee, Kevin Walsh, Tyler Brooks.",
+    )])
+    os.chdir(SCRATCH)  # the crew writes report.md to the working directory
+    for golden in dataset.evals_iterator(async_config=SEQUENTIAL):
+        with trace(expected_output=golden.expected_output, metrics=[correct_shortlist]):
+            crew.kickoff(inputs=inputs)
+            candidates = json.loads((SCRATCH / "candidates.json").read_text())["candidates"].values()
+            picked = [f"{c['name']} ({c['score']}/10)" for c in candidates if c["decision"] == "INTERVIEW"]
+            rejected = [f"{c['name']} ({c['score']}/10)" for c in candidates if c["decision"] != "INTERVIEW"]
+            update_current_trace(
+                input=golden.input,
+                output=f"Invite to interview: {', '.join(picked) or 'nobody'}. Reject: {', '.join(rejected) or 'nobody'}.",
+            )
+
+
+SUITES = {"replies": [evaluate_replies], "screening": [evaluate_screening],
+          "all": [evaluate_replies, evaluate_screening]}
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 2 or sys.argv[1] not in SUITES:
+        sys.exit(f"Usage: uv run evaluate.py {'|'.join(SUITES)}")
+    instrument_crewai()
+    for suite in SUITES[sys.argv[1]]:
+        suite()

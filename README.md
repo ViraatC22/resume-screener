@@ -96,40 +96,27 @@ uv run scripts/generate_replies.py
 uv run check_replies.py --dry-run sample_replies
 ```
 
-## Evaluating the agent's decisions
+## Evaluating the agents with DeepEval
 
-Hiring decisions need to be checked before anyone acts on them, so `evaluate.py` runs
-an evaluation harness over the screening results in two layers, then leaves the final
-call to a person:
+`evaluate.py` evaluates the crews with [DeepEval's CrewAI
+integration](https://deepeval.com/integrations/frameworks/crewai). `instrument_crewai()`
+traces every crew run; each golden (an input plus the answer we expect) is one run, scored
+at two levels:
 
-1. **Deterministic checks** (`evaluation/checks.py`) compare what the agents produced
-   with the resumes and with fixed rules, so the same run always gets the same verdict:
-   - years of experience the parser or screener claimed vs. the dates on the resume
-   - every skill and number the screener cites must appear in the resume (mentions like
-     "no evidence of Python" don't count as claims)
-   - each decision follows the 8/10 cutoff
-   - the screener's input really was anonymous, and its reasoning has no bias terms
-   - invites went only to the shortlist, no slots clash, and every resume was screened
-     or listed as skipped
-2. **A judge LLM** (`judge.jsonc`, `evaluation/judge.py`) reviews the agent like a code
-   reviewer. It runs on Gemma 3 12B, a different model family and three times the size
-   of the screening agent's Qwen3 4B, so the agent never grades its own work. Like the
-   agents, it runs locally through Ollama. It reviews one anonymous resume at a time and
-   never sees the agent's score, so it can't anchor on it: it scores the candidate
-   itself, then checks every claim in the agent's reasoning against the resume, quoting
-   the evidence. Code then compares the two, including whether the agent's ranking
-   matches the judge's scores.
+| Suite | Goldens | Whole-run metric | Agent-level metrics |
+|---|---|---|---|
+| `replies` | 9 candidate replies: Gmail and Outlook styles, Spanish, vague, "none of these work", picking an option, confirming, an off-topic question, withdrawing, "next week, mornings" | **Reply understood** (GEval): the intent, days, and times match the expected answer | **Grounded in the reply** (GEval): no invented days, times, or choices |
+| `screening` | The six sample resumes | **Correct shortlist** (GEval): Priya and Daniel invited, the other four rejected | On the screener: **Evidence-based screening** (GEval: every claim backed by the anonymous profiles it was given) and DeepEval's **BiasMetric** |
 
-A candidate is marked **needs human review** if any check fails, the judge's own score
-lands on the other side of the 8/10 cutoff, the judge finds a claim the resume doesn't
-support or possible bias, or the two scores are 3 or more points apart; otherwise
-**ready for sign-off**. Nothing changes
-automatically: `evaluation.md` ends with a sign-off checklist for the person who makes
-the final call, and `evaluation.json` has the same results for other tools.
+The metrics are judged by Gemma 3 12B through Ollama: a different, larger model than the
+agents' Qwen3 4B, so the agents never grade themselves, and nothing leaves the machine.
+Screening evaluations run in a scratch folder with email off, so they never send invites or
+touch the real `candidates.json`.
 
 ```bash
-uv run evaluate.py              # checks + judge (about 2 minutes per candidate)
-uv run evaluate.py --no-judge   # checks only (seconds)
+uv run evaluate.py replies     # about 15 minutes
+uv run evaluate.py screening   # about 15 minutes
+uv run evaluate.py all
 ```
 
 ## Setup
@@ -145,11 +132,11 @@ uv run evaluate.py --no-judge   # checks only (seconds)
    Use the `-instruct` build, not plain `qwen3:4b`: the plain tag is a thinking
    model that reasons for minutes before every answer.
 
-   For the judge in `evaluate.py`, also set up Gemma 3 12B:
+   For the DeepEval metrics in `evaluate.py`, also set up Gemma 3 12B:
 
    ```bash
    ollama pull gemma3:12b
-   ollama create gemma3:12b-16k -f Modelfile.judge
+   ollama create gemma3:12b-16k -f Modelfile.eval
    ```
 
 2. Install dependencies:
@@ -221,14 +208,10 @@ Working end to end on the sample data:
   two unrelated emails are ignored. A screening run takes about 5 minutes, and each
   reply 10-20 seconds, on an M-series MacBook.
 
-- **Evaluation:** the deterministic checks pass on every real decision, and catch
-  each of six planted agent errors (exaggerated years, a made-up metric, a
-  hallucinated skill, a gendered pronoun, a score that contradicts its decision,
-  and an email leaked into an anonymous profile). The judge catches planted false claims too (5 years of Django
-  in production, a Kafka migration, AWS deployments), quoting the resume, and scores
-  independently of the agent. On the real run it agrees with all six decisions,
-  within one point, and flags one borderline candidate's reasoning for a person to
-  check.
+- **Evaluation (DeepEval):** on the 9 sample replies, the reply reader is grounded in every
+  one (it never invents a day or time) and understands 8 of 9. The miss is real: it labels
+  a Spanish "option 2" reply as "confirm" instead of "reschedule". The live system still
+  books it correctly, because code treats any chosen option as a booking.
 
 ## Project Structure
 
@@ -236,13 +219,14 @@ Working end to end on the sample data:
 - `crew.jsonc` - Crew definition with tasks and configuration
 - `replies.jsonc` - The reply-reading crew used by `check_replies.py`
 - `check_replies.py` - Reads and answers candidates' replies
-- `evaluate.py` and `evaluation/` - Evaluation harness: deterministic checks and the judge LLM
+- `evaluate.py` - DeepEval evaluation of the crews
+- `docs/connect-talent-comparison.md` - Amazon Connect Talent vs. this solution
 - `tools/` - Custom tools, the blind screening guardrails, and reply handling (Python)
 - `resumes/` - Input resumes
 - `scripts/generate_resumes.py` - Builds the sample resumes
 - `scripts/generate_replies.py` - Builds sample replies for a dry run
 - `Modelfile` - Ollama model with a 16k context window for the agents
-- `judge.jsonc`, `Modelfile.judge` - The judge LLM's crew and model
+- `Modelfile.eval` - The evaluation model for DeepEval's metrics
 
 > **Note:** `custom:<name>` tool references execute `tools/<name>.py` as local
 > Python code when the crew loads. Only run crew projects from sources you

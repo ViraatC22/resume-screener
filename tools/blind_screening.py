@@ -22,10 +22,10 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from tools.invites import CANDIDATES_FILE
 from tools.resume_reader_tool import RESUMES_DIR, read_resume, resume_files
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATES_FILE = ROOT / "candidates.json"
 
 SHORTLIST_SCORE = 8
 FIRST_INTERVIEW_HOUR = 10  # local time; later interviews follow hourly
@@ -121,9 +121,7 @@ def anonymize_candidates(output):
     candidates, profiles = {}, {}
     for number, file_name in enumerate((f for f in texts if f not in skipped), start=1):
         cid = f"C{number}"
-        # The anonymous profile stays in candidates.json so evaluate.py can
-        # check the screener's reasoning against exactly what it was shown.
-        profiles[cid] = entries[file_name]["profile"]
+        profiles[cid] = entries[file_name].pop("profile")
         candidates[cid] = entries[file_name]
 
     CANDIDATES_FILE.write_text(json.dumps({"candidates": candidates, "skipped": skipped}, indent=2))
@@ -169,7 +167,6 @@ def check_screening(output):
         score = evaluations[cid][0]
         candidates[cid]["score"] = score
         candidates[cid]["decision"] = "INTERVIEW" if score >= SHORTLIST_SCORE else "REJECT"
-        candidates[cid]["reasoning"] = evaluations[cid][1]
         candidates[cid].pop("interview_start", None)
     for slot, cid in enumerate(shortlist):
         candidates[cid]["interview_start"] = (first_slot + timedelta(hours=slot)).isoformat()

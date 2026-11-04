@@ -7,8 +7,10 @@ requires-python = ">=3.10,<3.14"
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "crewai[tools]>=1.15.18,<2.0.0",
+    "deepeval>=3.9.6",
     "icalendar>=7.3.0",
     "mail-parser-reply>=1.36",
+    "ollama>=0.6.3",
     "pypdf>=6.19.0",
     "python-docx>=1.2.0",
 ]
