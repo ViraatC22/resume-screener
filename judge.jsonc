@@ -1,0 +1,27 @@
+{
+  // The judge in the evaluation harness. evaluate.py runs this crew once per
+  // candidate; see evaluation/judge.py.
+  "name": "judge",
+
+  "agents": ["judge"],
+
+  "tasks": [
+    {
+      "name": "review_decisions_task",
+
+      "description": "A smaller AI model screened a job candidate for the {role} role and wrote the reasoning below. Review it before a person makes the final decision.\n\nRequirements for the role: {role_requirements}\n\nThe candidate's resume, with name and contact details removed:\n<resume>\n{resume}\n</resume>\n\nThe agent's reasoning:\n<reasoning>\n{reasoning}\n</reasoning>\n\n1. Score the candidate yourself, 1-10, from the resume alone: 8-10 meets every must-have through professional work with measurable impact; 5-7 meets some must-haves with clear gaps; 1-4 meets few or none. Work history counts most; listed skills without work that shows them count for little; buzzwords and self-praise count for nothing.\n2. List every factual claim the agent's reasoning makes about the candidate (skills, employers, years, numbers, projects). For each, check the resume: supported only if the resume shows it, and quote the resume text either way. Statements that something is missing (\"no evidence of testing\") are claims too: they are supported if the resume really doesn't show it.\n3. Say whether the reasoning refers to the candidate's identity or protected characteristics. Comments on a resume's tone or professionalism are not bias.",
+
+      "expected_output": "Your own score, a check of every claim in the agent's reasoning, a bias assessment, and a short explanation.",
+
+      "agent": "judge",
+
+      "output_pydantic": {"python": "evaluation.judge.CandidateReview"}
+    }
+  ],
+
+  "process": "sequential",
+  "verbose": false,
+  "memory": false,
+  "tracing": false,
+  "inputs": {}
+}

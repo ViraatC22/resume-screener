@@ -1,0 +1,6 @@
+# Judge model for evaluate.py: Gemma 3 12B with a 16k context window, so all
+# six resumes and the agent's reasoning fit in one review.
+#
+#   ollama create gemma3:12b-16k -f Modelfile.judge
+FROM gemma3:12b
+PARAMETER num_ctx 16384

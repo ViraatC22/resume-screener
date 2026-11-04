@@ -6,3 +6,5 @@ invites/
 .venv/
 candidates.json
 sample_replies/
+evaluation.md
+evaluation.json

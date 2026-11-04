@@ -121,7 +121,9 @@ def anonymize_candidates(output):
     candidates, profiles = {}, {}
     for number, file_name in enumerate((f for f in texts if f not in skipped), start=1):
         cid = f"C{number}"
-        profiles[cid] = entries[file_name].pop("profile")
+        # The anonymous profile stays in candidates.json so evaluate.py can
+        # check the screener's reasoning against exactly what it was shown.
+        profiles[cid] = entries[file_name]["profile"]
         candidates[cid] = entries[file_name]
 
     CANDIDATES_FILE.write_text(json.dumps({"candidates": candidates, "skipped": skipped}, indent=2))
@@ -167,6 +169,7 @@ def check_screening(output):
         score = evaluations[cid][0]
         candidates[cid]["score"] = score
         candidates[cid]["decision"] = "INTERVIEW" if score >= SHORTLIST_SCORE else "REJECT"
+        candidates[cid]["reasoning"] = evaluations[cid][1]
         candidates[cid].pop("interview_start", None)
     for slot, cid in enumerate(shortlist):
         candidates[cid]["interview_start"] = (first_slot + timedelta(hours=slot)).isoformat()
