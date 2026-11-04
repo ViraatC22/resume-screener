@@ -58,7 +58,10 @@ class CalendarInviteTool(BaseTool):
             return f"No email address on file for {cid} ({candidate['name']}); invite not sent."
 
         when = when_text(datetime.fromisoformat(candidate["interview_start"]))
-        candidate.update(invite_uid=f"{uuid.uuid4()}@resume-screener", invite_sequence=0, status="invited")
+        candidate.update(
+            invite_uid=f"{uuid.uuid4()}@resume-screener", invite_sequence=0, status="invited",
+            invited_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
         status = send_invite(
             cid, data,
             f"Thanks for applying for the {data['role']} role. We'd like to invite you "

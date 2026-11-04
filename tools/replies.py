@@ -23,7 +23,7 @@ from icalendar import Calendar
 from mailparser_reply import EmailReplyParser
 from pydantic import BaseModel, Field
 
-from tools.invites import OUR_HEADER, ROOT, load_state, save_state, send_email, send_invite, when_text
+from tools.invites import CANDIDATES_FILE, OUR_HEADER, ROOT, load_state, save_state, send_email, send_invite, when_text
 
 SLOT_HOURS = range(10, 17)  # interview start times, local time
 SEARCH_DAYS = 14            # how far ahead to look for free slots
@@ -70,6 +70,8 @@ class ReplyDecision(BaseModel):
 
 def fetch_messages() -> list[EmailMessage]:
     """New inbox messages that look like replies to our invites (read-only)."""
+    if not CANDIDATES_FILE.exists():  # no screening run yet, so nothing to reply to
+        return []
     data = load_state()
     since = date.today() - timedelta(days=SEARCH_DAYS)
     with imaplib.IMAP4_SSL(os.getenv("IMAP_HOST", "imap.gmail.com")) as imap:
@@ -210,8 +212,12 @@ def read_reply(text, cid, data, received, offered) -> ReplyDecision:
 
 # --- Acting on it -------------------------------------------------------------
 
-def process_replies(messages, dry_run=False) -> None:
+def process_replies(messages, dry_run=False, quiet=False) -> None:
+    """Answer new replies. quiet=True prints nothing when there were none."""
+    if not CANDIDATES_FILE.exists():
+        return
     data = load_state()
+    loaded_at = CANDIDATES_FILE.stat().st_mtime_ns
     data.setdefault("processed_replies", [])
     handled = 0
     for msg in sorted(messages, key=_received):
@@ -220,12 +226,25 @@ def process_replies(messages, dry_run=False) -> None:
         cid = match_candidate(msg, data)
         if cid is None:
             continue
+        invited_at = data["candidates"][cid].get("invited_at")
+        if invited_at and _received(msg) < datetime.fromisoformat(invited_at):
+            continue  # a reply to an earlier run's invite, which this run never sent
+        # A `crewai run` that started meanwhile rewrites candidates.json; saving
+        # this older copy would undo it, so stop and pick up from the new state.
+        if not dry_run and CANDIDATES_FILE.stat().st_mtime_ns != loaded_at:
+            print("A new screening run replaced candidates.json; remaining replies wait for the next check.")
+            return
+        if quiet:  # watch mode: timestamp each reply in the log
+            print(f"\n{datetime.now():%Y-%m-%d %H:%M:%S}", end="")
         handle_reply(cid, msg, data, dry_run)
         data["processed_replies"].append(msg["Message-ID"])
         handled += 1
         if not dry_run:
             save_state(data)  # after every reply, so a crash never resends anything
+            loaded_at = CANDIDATES_FILE.stat().st_mtime_ns
 
+    if quiet and not handled:
+        return
     print(f"\n{handled} new repl{'y' if handled == 1 else 'ies'}." + (" Dry run: nothing was sent or saved." if dry_run else ""))
     for cid, c in data["candidates"].items():
         if c.get("invite_uid"):

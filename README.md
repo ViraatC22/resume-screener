@@ -66,10 +66,23 @@ replies, reads calendar responses directly, and finds free slots (weekdays,
 the candidate's words, in any language, into a structured decision, and code works
 out the actual dates so the small model never does date math.
 
+Replies are answered automatically by a background service that checks Gmail every
+minute, starts at login, and restarts if it ever stops (macOS):
+
 ```bash
-uv run check_replies.py            # check Gmail once
-uv run check_replies.py --watch    # keep checking every minute
+scripts/reply_watcher.sh install     # turn it on
+scripts/reply_watcher.sh status      # is it running? recent log lines
+scripts/reply_watcher.sh uninstall   # turn it off
 ```
+
+The log is `logs/replies.log`. The first time, macOS asks whether `uv` may access
+the Documents folder; allow it, or the service can't read the project. To check by hand
+instead, run `uv run check_replies.py` once, or `uv run check_replies.py --watch` to keep
+checking in a terminal.
+
+A reply only counts if it arrived after that candidate's invite was sent, so replies to
+an earlier run's invites are never answered. If you start a new `crewai run` while the
+service is mid-check, it stops and picks up from the new run instead of overwriting it.
 
 Gmail is opened read-only, so your mail is never marked as read, and only replies to
 this run's invites are touched.

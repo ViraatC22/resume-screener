@@ -4,6 +4,7 @@ Run it after `crewai run` has sent the invites:
 
     uv run check_replies.py                           # check Gmail once
     uv run check_replies.py --watch                   # keep checking every minute
+    scripts/reply_watcher.sh install                  # run --watch in the background, always
     uv run check_replies.py --dry-run sample_replies  # test with saved .eml files; sends and saves nothing
 
 A candidate who asks for another time gets an updated invite when a matching
@@ -15,6 +16,7 @@ aren't about scheduling, the candidate is flagged for a person to follow up.
 import argparse
 import email
 import time
+from datetime import datetime
 from email import policy
 from pathlib import Path
 
@@ -32,15 +34,23 @@ def main() -> None:
     args = parser.parse_args()
     load_dotenv(ROOT / ".env", override=True)
 
+    if args.watch:
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S} Watching for replies every minute.", flush=True)
     while True:
-        if args.dry_run:
-            messages = [
-                email.message_from_bytes(path.read_bytes(), policy=policy.default)
-                for path in sorted(Path(args.dry_run).glob("*.eml"))
-            ]
-        else:
-            messages = fetch_messages()
-        process_replies(messages, dry_run=bool(args.dry_run))
+        try:
+            if args.dry_run:
+                messages = [
+                    email.message_from_bytes(path.read_bytes(), policy=policy.default)
+                    for path in sorted(Path(args.dry_run).glob("*.eml"))
+                ]
+            else:
+                messages = fetch_messages()
+            process_replies(messages, dry_run=bool(args.dry_run), quiet=args.watch)
+        except Exception as exc:
+            if not args.watch:
+                raise
+            # Unattended: a Gmail or network hiccup shouldn't stop the watcher.
+            print(f"{datetime.now():%Y-%m-%d %H:%M:%S} Check failed ({exc}); trying again in a minute.", flush=True)
         if not args.watch or args.dry_run:
             break
         time.sleep(60)
