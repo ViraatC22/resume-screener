@@ -151,6 +151,25 @@ The sample resumes use made-up `example.com` addresses. To test, set
 `INVITE_TEST_EMAIL` in `.env` to your own address: every invite then goes to you,
 marked with the candidate it was meant for.
 
+## Status
+
+Working end to end on the sample data:
+
+- **Screening:** all six resumes (PDF, Word, and plain text) are parsed and scored
+  blind. The two strong candidates score 10/10 and are invited; the two middling
+  (4-5/10) and two weak (1-2/10) candidates are rejected. Both guardrails pass
+  without retries.
+- **Scheduling:** both invites are emailed with a calendar event and an "Add to
+  Google Calendar" link.
+- **Replies:** all ten sample replies are handled correctly in a dry run, and the
+  two unrelated emails are ignored. A screening run takes about 5 minutes, and each
+  reply 10-20 seconds, on an M-series MacBook.
+
+Next: an evaluation harness that checks the agent's decisions against
+deterministic rules (for example, that claimed years of experience match the
+resume) and has a separate, more capable judge LLM review its reasoning before a
+person makes the final call.
+
 ## Project Structure
 
 - `agents/` - Agent definitions (JSONC). Filenames must match the names in `crew.jsonc`.
