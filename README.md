@@ -211,7 +211,9 @@ Working end to end on the sample data:
 - **Evaluation (DeepEval):** on the 9 sample replies, the reply reader is grounded in every
   one (it never invents a day or time) and understands 8 of 9. The miss is real: it labels
   a Spanish "option 2" reply as "confirm" instead of "reschedule". The live system still
-  books it correctly, because code treats any chosen option as a booking.
+  books it correctly, because code treats any chosen option as a booking. On the six
+  resumes, the screening crew passes all three metrics: the correct shortlist, reasoning
+  backed by the anonymous profiles (1.0), and bias (0.14, below the 0.5 limit).
 
 ## Project Structure
 

@@ -123,7 +123,8 @@ def evaluate_screening():
         model=EVAL_MODEL,
         threshold=0.8,
         criteria="The actual output lists who was invited to interview and who was rejected. It must invite exactly "
-        "the candidates the expected output invites and reject exactly the ones it rejects.",
+        "the candidates the expected output invites and reject exactly the ones it rejects. Only the names in each "
+        "group matter; ignore their order and formatting.",
         evaluation_params=[Param.ACTUAL_OUTPUT, Param.EXPECTED_OUTPUT],
     )
     evidence_based = GEval(
@@ -152,8 +153,8 @@ def evaluate_screening():
         with trace(expected_output=golden.expected_output, metrics=[correct_shortlist]):
             crew.kickoff(inputs=inputs)
             candidates = json.loads((SCRATCH / "candidates.json").read_text())["candidates"].values()
-            picked = [f"{c['name']} ({c['score']}/10)" for c in candidates if c["decision"] == "INTERVIEW"]
-            rejected = [f"{c['name']} ({c['score']}/10)" for c in candidates if c["decision"] != "INTERVIEW"]
+            picked = [c["name"] for c in candidates if c["decision"] == "INTERVIEW"]
+            rejected = [c["name"] for c in candidates if c["decision"] != "INTERVIEW"]
             update_current_trace(
                 input=golden.input,
                 output=f"Invite to interview: {', '.join(picked) or 'nobody'}. Reject: {', '.join(rejected) or 'nobody'}.",
